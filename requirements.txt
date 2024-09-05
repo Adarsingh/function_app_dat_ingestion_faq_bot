@@ -7,3 +7,5 @@ requests
 pandas
 azure-identity
 azure-devops
+msrest
+azure-storage-blob

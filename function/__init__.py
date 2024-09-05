@@ -1,288 +1,129 @@
 
-import logging
-import pandas as pd
-import requests
-import azure.functions as func
-from io import StringIO
+# --------------------------------------------------------------------------------------------------------------------------------------------------
+# Final Code
+#Get files (csv, pdf) from devops
+#Upload it to blob directly.
+
 import os
 import json
-from azure.identity import DefaultAzureCredential
+import azure.functions as func
+from azure.devops.connection import Connection
+from msrest.authentication import BasicAuthentication
+from azure.devops.v7_1.git.models import GitVersionDescriptor
+from azure.storage.blob import BlobServiceClient
 
-def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('Processing request to read CSV from Azure DevOps.')
 
-    # Azure DevOps parameters
-    organization = 'adarshs0791'
-    project = 'FAQ_Copilot'
-    repository = 'csv_files'
-    file_path = 'main/'
+def create_blob_connection(container_name):
 
-    # Use Managed Identity to get an access token
-    credential = DefaultAzureCredential()
-    token = credential.get_token('https://dev.azure.com/.default').token
-
-    local_directory = os.path.join(os.getcwd(), 'data')
-    os.makedirs(local_directory, exist_ok=True)
-
-    # Construct URL to access the file
-    url = f'https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository}/items?path={file_path}&version=GBmain&api-version=6.0'
-
-    # Set headers with Managed Identity token
-    headers = {
-        'Authorization': f'Bearer {token}'
-    }
+    print("Connecting to Azure Blob Storage...")
 
     try:
-        # Make request to Azure DevOps
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        files = response.json().get('value', [])
+        # Retrieve account name and key from environment variables
+        account_name = os.getenv('StorageAccountName')
+        account_key = os.getenv('StorageAccountKey')
 
-        # Filter out only CSV files
-        csv_files = [file['path'] for file in files if file['path'].endswith('.csv')]
-        logging.info(f'CSV files to process: {csv_files}')
+        # Construct the connection string
+        connection_string = f'DefaultEndpointsProtocol=https;AccountName={account_name};AccountKey={account_key};EndpointSuffix=core.windows.net'
 
-        json_data = []
+        # Initialize BlobServiceClient
+        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
 
-        # Process each CSV file
-        for file_path in csv_files:
-            # Construct URL to access each CSV file
-            file_url = f'https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository}/items?path={file_path}&version=GBmain&api-version=6.0'
-            
-            # Make request to get CSV file content
-            file_response = requests.get(file_url, headers=headers)
-            file_response.raise_for_status()
-            
-            # Read CSV content into a pandas DataFrame
-            data = file_response.content
-            df = pd.read_csv(StringIO(data.decode('utf-8')))
-            
-            # Display first few rows of DataFrame for debugging
-            logging.info(f'Content of {file_path}:')
-            logging.info(f'\n{df.head()}')
+        # Create a container client
+        container_client = blob_service_client.get_container_client(container_name)
 
-            # Save DataFrame to a local CSV file
-            local_file_path = os.path.join(local_directory, os.path.basename(file_path))
-            logging.info(f'Saving file to: {local_file_path}')
-            df.to_csv(local_file_path, index=False)
+        # Ensure the container exists
+        if not container_client.exists():
+            container_client.create_container()
 
-            # Convert DataFrame to JSON
-            json_data.extend(df.to_dict(orient='records'))
-        
-        return func.HttpResponse(json.dumps(json_data), mimetype="application/json")
+        print("Returning container_client")
+
+        return container_client
 
     except Exception as e:
-        logging.error(f'Error: {str(e)}')
-        return func.HttpResponse(f'Error: {str(e)}', status_code=500)
+        print(f"An error occurred while connecting to blob storage: {e}")
+        raise
 
 
+def upload_file_to_blob(blob_client, file_content, filename):
+    try:
+        print(f"Uploading '{filename}'...")
+        blob_client.upload_blob(file_content, overwrite=True)
+        print(f"Successfully uploaded '{filename}' to container.")
+    except Exception as e:
+        print(f"Failed to upload '{filename}': {e}")
+        raise
 
 
-# ===========================================================================================================================================================
-# Using MAnaged identity.
+def transfer_files_from_devops_to_blob(pat, base_url, project, repository, branch_name, file_path, container_client):
 
-# import logging
-# import pandas as pd
-# import requests
-# import azure.functions as func
-# from io import StringIO
-# import os
-# from azure.identity import DefaultAzureCredential
+    credentials = BasicAuthentication('', pat)
+    connection = Connection(base_url=base_url, creds=credentials)
 
-# def main(req: func.HttpRequest) -> func.HttpResponse:
-#     logging.info('Processing request to read CSV from Azure DevOps.')
+    try:
+        git_client = connection.clients.get_git_client()
+        items = git_client.get_items(
+            repository_id=repository,
+            project=project,
+            scope_path=file_path,
+            version_descriptor=GitVersionDescriptor(
+                version=branch_name,
+                version_type='branch'
+            ),
+            recursion_level='Full'
+        )
 
-#     # Azure DevOps parameters
-#     organization = 'adarshs0791'
-#     project = 'FAQ_Copilot'
-#     repository = 'csv_files'
-#     file_path = 'main/'
-#     # pat = os.getenv('PAT')
+        files_list = [item.path for item in items if item.git_object_type == 'blob' and (item.path.endswith('.pdf') or item.path.endswith('.csv'))]
 
-#     # Use Managed Identity to get an access token
-#     credential = DefaultAzureCredential()
-#     token = credential.get_token('https://dev.azure.com/.default').token
+        if not files_list:
+            print("No PDF or CSV files found in the repository.")
+            return  # Just return; no need to send an HTTP response here
 
-#     local_directory = os.path.join(os.getcwd(), 'data')
-#     os.makedirs(local_directory, exist_ok=True)
+        for file in files_list:
+            item_content = git_client.get_item_content(
+                repository_id=repository,
+                project=project,
+                path=file,
+                version_descriptor=GitVersionDescriptor(
+                    version=branch_name,
+                    version_type='branch'
+                )
+            )
 
-#     # Construct URL to access the file
-#     url = f'https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository}/items?path={file_path}&version=GBmain&api-version=6.0'
+            content = b''.join(item_content) if hasattr(item_content, '__iter__') else item_content
 
-#     # Set headers with PAT for authentication
-#     headers = {
-#         'Authorization': f'Bearer {token}'
-#     }
+            # Prepare blob client
+            blob_filename = os.path.basename(file)
+            blob_client = container_client.get_blob_client(blob_filename)
 
-#     try:
-#         # Make request to Azure DevOps
-#         response = requests.get(url, headers=headers)
-#         response.raise_for_status()
-#         files = response.json().get('value', [])
-
-#         # Filter out only CSV files
-#         csv_files = [file['path'] for file in files if file['path'].endswith('.csv')]
-#         logging.info(f'CSV files to process: {csv_files}')
-
-#         json_data = []
-
-#         # Process each CSV file
-#         for file_path in csv_files:
-#             # Construct URL to access each CSV file
-#             file_url = f'https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository}/items?path={file_path}&version=GBmain&api-version=6.0'
-            
-#             # Make request to get CSV file content
-#             file_response = requests.get(file_url, headers=headers)
-#             file_response.raise_for_status()
-            
-#             # Read CSV content into a pandas DataFrame
-#             data = file_response.content
-#             df = pd.read_csv(StringIO(data.decode('utf-8')))
-            
-#             # Display first few rows of DataFrame for debugging
-#             logging.info(f'Content of {file_path}:')
-#             logging.info(f'\n{df.head()}')
-
-#             # Save DataFrame to a local CSV file
-#             local_file_path = os.path.join(local_directory, os.path.basename(file_path))
-#             logging.info(f'Saving file to: {local_file_path}')
-#             df.to_csv(local_file_path, index=False)
-
-#             # Convert DataFrame to JSON
-#             json_data.extend(df.to_dict(orient='records'))
+            # Upload directly to blob storage
+            upload_file_to_blob(blob_client, content, blob_filename)
         
-#         return func.HttpResponse(json.dumps(json_data), mimetype="application/json")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        raise
 
-#         # return func.HttpResponse("CSV files successfully saved locally.", status_code=200)
+
+def main(req: func.HttpRequest) -> func.HttpResponse:
+    organization = 'adarshs0791'
+    project = 'FAQ_Copilot'
+    repository = 'csv_files' 
+    pat = os.getenv('PAT')
+    branch_name = 'main'  
+    file_path = ''  
+    container_name = 'devops-ingestion-container'
+    base_url = f'https://dev.azure.com/{organization}'
     
+    container_client = create_blob_connection(container_name)
 
-#     except Exception as e:
-#         logging.error(f'Error: {str(e)}')
-#         return func.HttpResponse(f'Error: {str(e)}', status_code=500)
+    try:
+        print("Starting to transfer files...")
+        transfer_files_from_devops_to_blob(pat, base_url, project, repository, branch_name, file_path, container_client)
+        print("All files have been transfered successfully.")
+    except Exception as e:
+        print(f"An error occurred while transfering files: {e}")
+        return func.HttpResponse(f"An error occurred while transfering files: {e}", status_code=500)
 
-
-# =======================================================================================================================================
-#Read from devops and write to local
-
-
-# import logging
-# import pandas as pd
-# import requests
-# import azure.functions as func
-# from io import StringIO
-# import os
+    return func.HttpResponse("Process completed successfully.", status_code=200)
 
 
-# def main(req: func.HttpRequest) -> func.HttpResponse:
-#     logging.info('Processing request to read CSV from Azure DevOps.')
-
-#     # Azure DevOps parameters
-#     organization = 'adarshs0791'
-#     project = 'FAQ_Copilot'
-#     repository = 'csv_files'
-#     file_path = 'main/'
-#     pat = os.getenv('PAT')
-
-#     local_directory = os.path.join(os.getcwd(), 'data')
-#     os.makedirs(local_directory, exist_ok=True)
-
-#     # Construct URL to access the file
-#     url = f'https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository}/items?path={file_path}&version=GBmain&api-version=6.0'
-
-#     # Set headers with PAT for authentication
-#     headers = {
-#         'Authorization': f'Basic {pat}'
-#     }
-
-#     try:
-#         # Make request to Azure DevOps
-#         response = requests.get(url, headers=headers)
-#         response.raise_for_status()
-#         files = response.json().get('value', [])
-
-#         # Filter out only CSV files
-#         csv_files = [file['path'] for file in files if file['path'].endswith('.csv')]
-#         logging.info(f'CSV files to process: {csv_files}')
-
-#         # Process each CSV file
-#         for file_path in csv_files:
-#             # Construct URL to access each CSV file
-#             file_url = f'https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository}/items?path={file_path}&version=GBmain&api-version=6.0'
-            
-#             # Make request to get CSV file content
-#             file_response = requests.get(file_url, headers=headers)
-#             file_response.raise_for_status()
-            
-#             # Read CSV content into a pandas DataFrame
-#             data = file_response.content
-#             df = pd.read_csv(StringIO(data.decode('utf-8')))
-            
-#             # Save DataFrame to a local CSV file
-#             local_file_path = os.path.join(local_directory, os.path.basename(file_path))
-#             logging.info(f'Saving file to: {local_file_path}')
-#             df.to_csv(local_file_path, index=False)
-
-#             # Convert DataFrame to JSON
-#         #     json_data = df.to_json(orient='records')
-        
-#         # return func.HttpResponse(json_data, mimetype="application/json")
-
-#         return func.HttpResponse("CSV files successfully saved locally.", status_code=200)
-    
-
-#     except Exception as e:
-#         logging.error(f'Error: {str(e)}')
-#         return func.HttpResponse(f'Error: {str(e)}', status_code=500)
-
-
-#=============================================================================================================================================================
-#Initital code
-
-# import logging
-# import pandas as pd
-# import requests
-# import azure.functions as func
-# from io import StringIO
-# import os
-
-
-# def main(req: func.HttpRequest) -> func.HttpResponse:
-#     logging.info('Processing request to read CSV from Azure DevOps.')
-
-#     # Azure DevOps parameters
-#     organization = 'adarshs0791'
-#     project = 'FAQ_Copilot'
-#     repository = 'csv_files'
-#     # file_path = 'main/Admin_Branch.csv'
-#     file_path = 'main/'
-#     # pat = 'your_personal_access_token'
-#     pat = os.getenv('PAT')
-
-#     # Construct URL to access the file
-#     url = f'https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repository}/items?path={file_path}&version=GBmain&api-version=6.0'
-
-#     # Set headers with PAT for authentication
-#     headers = {
-#         'Authorization': f'Basic {pat}'
-#     }
-
-#     try:
-#         # Make request to Azure DevOps
-#         response = requests.get(url, headers=headers)
-#         response.raise_for_status()
-
-#         # Read CSV content into a pandas DataFrame
-#         data = response.content
-#         df = pd.read_csv(StringIO(data.decode('utf-8')))
-
-#         #Write content file to csv file locally
-#         local_file_path = '/tmp/admin_branch_data.csv'
-#         df.to_csv(local_file_path, index=False)
-        
-#         # Convert DataFrame to JSON
-#         json_data = df.to_json(orient='records')
-        
-#         return func.HttpResponse(json_data, mimetype="application/json")
-#     except Exception as e:
-#         logging.error(f'Error: {str(e)}')
-#         return func.HttpResponse(f'Error: {str(e)}', status_code=500)
+# --------------------------------------------------------------------------------------------------------------------------------------------------
