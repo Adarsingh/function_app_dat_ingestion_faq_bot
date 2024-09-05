@@ -58,13 +58,16 @@ def transfer_files_from_devops_to_blob(pat, base_url, project, repository, branc
 
     
 
-    # Get the managed identity token
-    credential = ManagedIdentityCredential()
-    token = credential.get_token("4cfa21c7-30c8-49fa-87ff-56080215c7e9/.default")
+    # Replace with your Azure DevOps organization URL
+    base_url = 'https://dev.azure.com/FAQCopilotMAQ'
 
-    # Use the token to authenticate
-    credentials = BasicAuthentication('', token.token)
-    connection = Connection(base_url=base_url, creds=credentials)
+    # Get a token using the managed identity
+    credential = DefaultAzureCredential()
+    token = credential.get_token('https://dev.azure.com/.default')
+
+    # Use the token to authenticate with Azure DevOps
+    creds = BasicAuthentication('', token.token)
+    connection = Connection(base_url=base_url, creds=creds)
 
     try:
         git_client = connection.clients.get_git_client()
