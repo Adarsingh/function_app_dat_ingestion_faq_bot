@@ -7,6 +7,9 @@ from msrest.authentication import BasicAuthentication
 from azure.devops.v7_1.git.models import GitVersionDescriptor
 from azure.storage.blob import BlobServiceClient
 from azure.identity import DefaultAzureCredential
+from azure.identity import ManagedIdentityCredential
+from azure.devops.connection import Connection
+from msrest.authentication import BasicAuthentication
 
 
 def create_blob_connection(container_name):
@@ -53,7 +56,14 @@ def upload_file_to_blob(blob_client, file_content, filename):
 
 def transfer_files_from_devops_to_blob(pat, base_url, project, repository, branch_name, file_path, container_client):
 
-    credentials = BasicAuthentication('', pat)
+    
+
+    # Get the managed identity token
+    credential = ManagedIdentityCredential()
+    token = credential.get_token("4cfa21c7-30c8-49fa-87ff-56080215c7e9/.default")
+
+    # Use the token to authenticate
+    credentials = BasicAuthentication('', token.token)
     connection = Connection(base_url=base_url, creds=credentials)
 
     try:
