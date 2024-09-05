@@ -110,7 +110,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     pat = os.getenv('PAT')
     branch_name = 'main'  
     file_path = ''  
-    container_name = 'devops-ingestion-container'
+    # container_name = 'devops-ingestion-container'
+    container_name = 'data-ingestion-poc-container'
     base_url = f'https://dev.azure.com/{organization}'
     
     container_client = create_blob_connection(container_name)
