@@ -111,9 +111,9 @@ def transfer_files_from_devops_to_blob(pat, base_url, project, repository, branc
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    organization = 'adarshs0791'
-    project = 'FAQ_Copilot'
-    repository = 'csv_files' 
+    organization = 'FAQCopilotMAQ'
+    project = 'FAQ'
+    repository = 'copilot' 
     pat = os.getenv('PAT')
     branch_name = 'main'  
     file_path = ''  
