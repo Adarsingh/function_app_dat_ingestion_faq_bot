@@ -8,25 +8,20 @@ from azure.devops.v7_1.git.models import GitVersionDescriptor
 from azure.storage.blob import BlobServiceClient
 from azure.identity import DefaultAzureCredential
 from azure.identity import ManagedIdentityCredential
-from azure.devops.connection import Connection
-from msrest.authentication import BasicAuthentication
+from azure.devops.v7_1.build.models import Build, BuildDefinitionReference
 
 
-def create_blob_connection(container_name):
+
+#Crate a blob connection and return container connection 
+def create_blob_connection(container_name, storage_account_name, mi_credential):
 
     print("Connecting to Azure Blob Storage using Managed Identity...")
-    try:
-        # Use DefaultAzureCredential to authenticate
-        credential = DefaultAzureCredential()
-        
-        # Retrieve account name from environment
-        account_name = 'dataingestionpocblob'
-        
-        # Construct the endpoint URL
-        endpoint = f'https://{account_name}.blob.core.windows.net'
 
-        # Initialize BlobServiceClient
-        blob_service_client = BlobServiceClient(account_url=endpoint, credential=credential)
+    try:
+
+        # Replace with your Blob Storage endpoint
+        account_url = f"https://{storage_account_name}.blob.core.windows.net"
+        blob_service_client = BlobServiceClient(account_url=account_url, credential= mi_credential)
 
         # Create a container client
         container_client = blob_service_client.get_container_client(container_name)
@@ -38,12 +33,13 @@ def create_blob_connection(container_name):
         print("Returning container_client")
 
         return container_client
-    
+
     except Exception as e:
         print(f"An error occurred while connecting to blob storage: {e}")
         raise
 
 
+#Uplaod each file to continer 
 def upload_file_to_blob(blob_client, file_content, filename):
     try:
         print(f"Uploading '{filename}'...")
@@ -54,23 +50,17 @@ def upload_file_to_blob(blob_client, file_content, filename):
         raise
 
 
-def transfer_files_from_devops_to_blob(pat, base_url, project, repository, branch_name, file_path, container_client):
 
+#Make conection to devops and start file transfer.
+def transfer_files_from_devops_to_blob(pat, base_url, project, repository, branch_name, file_path, container_client, mi_credentials):
     
-
-    # Replace with your Azure DevOps organization URL
-    base_url = 'https://dev.azure.com/FAQCopilotMAQ'
-
-    # Get a token using the managed identity
-    credential = DefaultAzureCredential()
-    token = credential.get_token('https://dev.azure.com/.default')
-
-    # Use the token to authenticate with Azure DevOps
-    creds = BasicAuthentication('', token.token)
-    connection = Connection(base_url=base_url, creds=creds)
+    # Wrap DefaultAzureCredential with BasicAuthentication for Azure DevOps client
+    credentials = BasicAuthentication('', '')  # Required by the library, but we'll use `credential` directly in the API calls
+    connection = Connection(base_url=base_url, creds= mi_credentials)
 
     try:
         git_client = connection.clients.get_git_client()
+
         items = git_client.get_items(
             repository_id=repository,
             project=project,
@@ -86,7 +76,7 @@ def transfer_files_from_devops_to_blob(pat, base_url, project, repository, branc
 
         if not files_list:
             print("No PDF or CSV files found in the repository.")
-            return  # Just return; no need to send an HTTP response here
+            return
 
         for file in files_list:
             item_content = git_client.get_item_content(
@@ -107,34 +97,51 @@ def transfer_files_from_devops_to_blob(pat, base_url, project, repository, branc
 
             # Upload directly to blob storage
             upload_file_to_blob(blob_client, content, blob_filename)
-        
+
     except Exception as e:
         print(f"An error occurred: {e}")
         raise
 
 
+
 def main(req: func.HttpRequest) -> func.HttpResponse:
+
     organization = 'FAQCopilotMAQ'
     project = 'FAQ'
     repository = 'copilot' 
-    pat = os.getenv('PAT')
     branch_name = 'main'  
     file_path = ''  
-    # container_name = 'devops-ingestion-container'
-    container_name = 'data-ingestion-poc-container'
-    base_url = f'https://dev.azure.com/{organization}'
     
-    container_client = create_blob_connection(container_name)
+    container_name = os.getenv('ContainerName')
+    storage_account_name = os.getenv('StorageAccountName')
 
+    base_url = f'https://dev.azure.com/{organization}'
+
+    
+    # Initialize Managed Identity credential
+    credential = DefaultAzureCredential()
+    
+    # Create Blob connection
+    try:
+        print("Connecting to Azure Blob Storage...")
+        container_client = create_blob_connection(container_name, storage_account_name, credential)
+    except Exception as e:
+        print(f"An error occurred while connecting to Blob Storage: {e}")
+        return func.HttpResponse(f"An error occurred while connecting to Blob Storage: {e}", status_code=500)
+
+
+    # Start tranferring files
     try:
         print("Starting to transfer files...")
-        transfer_files_from_devops_to_blob(pat, base_url, project, repository, branch_name, file_path, container_client)
+        transfer_files_from_devops_to_blob(base_url, project, repository, branch_name, file_path, container_client, credential)
         print("All files have been transfered successfully.")
     except Exception as e:
         print(f"An error occurred while transfering files: {e}")
         return func.HttpResponse(f"An error occurred while transfering files: {e}", status_code=500)
 
+    #Return failures for main
     return func.HttpResponse("Process completed successfully.", status_code=200)
+
 
 
 # --------------------------------------------------------------------------------------------------------------------------------------------------
